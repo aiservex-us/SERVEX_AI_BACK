@@ -25,18 +25,19 @@ load_dotenv()
 
 app = FastAPI(title="SERVEX_AI - LESRO Data Engine API")
 
-# Modifica esta sección en tu código de FastAPI
+activo = True
+
+origins = [
+    "https://servex-ai-iota.vercel.app",  # tu frontend en Vercel
+    "http://localhost:3000",              # opcional para pruebas locales
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://servex-ai-iota.vercel.app",
-        "https://servex-ai-iota.vercel.app/LESRO/", # Variante con slash
-        "http://localhost:3000",
-    ],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"] # Agrega esto para asegurar visibilidad
 )
 
 # Inicializamos cliente Supabase
@@ -154,14 +155,9 @@ async def audit_process(background_tasks: BackgroundTasks, file: UploadFile = Fi
             .eq('company_name', 'LESRO') \
             .execute()
 
-        # ======================================================
-        # 🚀 ACTIVACIÓN EN SEGUNDO PLANO (Background Task)
-        # ======================================================
-        # Ejecutamos el agente sin bloquear la respuesta de la API
+        # 🚀 Background Task
         background_tasks.add_task(run_agent_narrative, reporte_final)
-        # ======================================================
 
-        # 9. Respuesta enriquecida inmediata para el Front-end
         return {
             "status": "success",
             "message": "Data processed and XML updated. SVX Copilot report is being generated in background.",
@@ -179,6 +175,5 @@ async def audit_process(background_tasks: BackgroundTasks, file: UploadFile = Fi
 
 if __name__ == "__main__":
     import uvicorn
-    # En Render se usa la variable de entorno $PORT
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
