@@ -29,7 +29,11 @@ app = FastAPI(title="SERVEX_AI - LESRO Data Engine API")
 # Configuración de CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=[
+        "https://servex-ai-iota.vercel.app",  # Tu frontend en Vercel
+        "http://localhost:3000",              # Para pruebas locales
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
