@@ -2,7 +2,7 @@ import os
 import io
 import json
 from typing import List
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client
 from dotenv import load_dotenv
@@ -18,7 +18,6 @@ from Reestructure_xml import (
 )
 
 # --- INTEGRACIÓN CON EL AGENTE NARRATIVO ---
-# Importamos el grafo (app) del segundo archivo
 from Reestructure_model import app as agent_workflow
 
 # Cargamos entorno
@@ -43,8 +42,26 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# --- RUTA RAÍZ PARA HEALTH CHECK (Evita 404 en Render) ---
+@app.get("/")
+async def root():
+    return {"status": "online", "service": "SERVEX_AI Engine"}
+
+# --- FUNCIÓN PARA EJECUCIÓN ASÍNCRONA DEL AGENTE ---
+def run_agent_narrative(reporte_data: list):
+    try:
+        print("🤖 [Async] Iniciando SVX Copilot para generar informe narrativo...")
+        agent_workflow.invoke({
+            "raw_data": reporte_data,
+            "summary_text": "",
+            "reporte_final": ""
+        })
+        print("✅ [Async] Informe narrativo generado y guardado.")
+    except Exception as e:
+        print(f"❌ [Async Error] Error en el agente: {str(e)}")
+
 @app.post("/audit-process")
-async def audit_process(file: UploadFile = File(...)):
+async def audit_process(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     # 1. Validación de extensión
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="Invalid file format. Please upload a CSV.")
@@ -136,20 +153,16 @@ async def audit_process(file: UploadFile = File(...)):
             .execute()
 
         # ======================================================
-        # 🚀 ACTIVACIÓN AUTOMÁTICA DEL AGENTE NARRATIVO
+        # 🚀 ACTIVACIÓN EN SEGUNDO PLANO (Background Task)
         # ======================================================
-        print("🤖 Iniciando SVX Copilot para generar informe narrativo...")
-        agent_workflow.invoke({
-            "raw_data": reporte_final, # Le pasamos los datos recién procesados
-            "summary_text": "",
-            "reporte_final": ""
-        })
+        # Ejecutamos el agente sin bloquear la respuesta de la API
+        background_tasks.add_task(run_agent_narrative, reporte_final)
         # ======================================================
 
-        # 9. Respuesta enriquecida para el Front-end
+        # 9. Respuesta enriquecida inmediata para el Front-end
         return {
             "status": "success",
-            "message": "Data processed, XML updated, and SVX Copilot report generated successfully.",
+            "message": "Data processed and XML updated. SVX Copilot report is being generated in background.",
             "data": {
                 "skus_affected": len(reporte_final),
                 "audit_report": reporte_final
@@ -157,9 +170,13 @@ async def audit_process(file: UploadFile = File(...)):
         }
 
     except Exception as e:
+        import traceback
         print(f"❌ Error en SERVEX_AI Engine: {str(e)}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # En Render se usa la variable de entorno $PORT
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
