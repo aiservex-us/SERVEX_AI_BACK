@@ -30,7 +30,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://servex-ai-iota.vercel.app",
-        "https://servex-ai-iota.vercel.app/", # Variante con slash
+        "https://servex-ai-iota.vercel.app/LESRO/", # Variante con slash
         "http://localhost:3000",
     ],
     allow_credentials=True,
