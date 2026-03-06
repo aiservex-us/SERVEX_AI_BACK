@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-multipart
+supabase
+python-dotenv
+pandas
+numpy
+langgraph
+langchain-groq
+# Agregué estas que son comunes en procesos XML/ML
+lxml
+beautifulsoup4
