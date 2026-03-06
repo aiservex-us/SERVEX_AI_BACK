@@ -25,16 +25,18 @@ load_dotenv()
 
 app = FastAPI(title="SERVEX_AI - LESRO Data Engine API")
 
-# Configuración de CORS
+# Modifica esta sección en tu código de FastAPI
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://servex-ai-iota.vercel.app",  # Tu frontend en Vercel
-        "http://localhost:3000",              # Para pruebas locales
+        "https://servex-ai-iota.vercel.app",
+        "https://servex-ai-iota.vercel.app/", # Variante con slash
+        "http://localhost:3000",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"] # Agrega esto para asegurar visibilidad
 )
 
 # Inicializamos cliente Supabase
