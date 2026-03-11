@@ -48,10 +48,10 @@ def limpiar_monto(val: str) -> int:
 # NUEVA FUNCIÓN: RESUMEN EJECUTIVO (MICRO-REPORTE)
 # ======================================================
 def generar_resumen_ejecutivo(reporte_final: List[Dict]) -> Dict[str, Any]:
+    """Genera un mapa general y legible de las discrepancias encontradas."""
     total_skus = len(reporte_final)
     skus_con_cambio_base = 0
     conteo_grados = {}
-    conteo_opcionales = 0
 
     for item in reporte_final:
         if item.get("nuevo_base_csv") is not None:
@@ -60,16 +60,12 @@ def generar_resumen_ejecutivo(reporte_final: List[Dict]) -> Dict[str, Any]:
         for comp in item.get("comparativa_grados_xml", []):
             grado = comp.get("grado", "Unknown")
             conteo_grados[grado] = conteo_grados.get(grado, 0) + 1
-        
-        # Conteo de opcionales detectados
-        conteo_opcionales += len(item.get("comparativa_opcionales_xml", []))
 
     resumen = {
         "total_skus_afectados": total_skus,
         "cambios_en_precio_base": skus_con_cambio_base,
         "desglose_por_grados": conteo_grados,
-        "cambios_en_opcionales": conteo_opcionales,
-        "mensaje_resumen": f"Cambios en {total_skus} SKUs. {skus_con_cambio_base} Base, {conteo_opcionales} Opcionales."
+        "mensaje_resumen": f"Se detectaron cambios en {total_skus} productos. {skus_con_cambio_base} requieren actualización de precio base."
     }
     return resumen
 
@@ -109,7 +105,7 @@ def auditar_csv_logic(csv_usuario: str, csv_maestro: str) -> List[Dict]:
     return discrepancias
 
 # ======================================================
-# 4. XML / PIM - EXTRACCIÓN (ACTUALIZADO PARA OPCIONALES)
+# 4. XML / PIM - EXTRACCIÓN
 # ======================================================
 def extraer_pim_xml(xml_raw: str, skus: List[str]) -> List[Dict]:
     root = ET.fromstring(xml_raw)
@@ -123,30 +119,27 @@ def extraer_pim_xml(xml_raw: str, skus: List[str]) -> List[Dict]:
         base_price_node = prod.find(".//Price/Value")
         base_price = float(base_price_node.text) if base_price_node is not None else 0.0
         
-        grados_info = {}
-        opcionales_info = {}
-
-        # Buscamos en los features relacionados al SKU
+        f_grados = None
         for f_code, f_elem in feature_map.items():
-            if sku in f_code:
-                for opt in f_elem.findall("Option"):
-                    opt_code = opt.findtext("Code", "").upper()
-                    val_node = opt.find(".//OptionPrice/Value")
-                    upcharge = float(val_node.text) if val_node is not None else 0.0
+            if sku in f_code and ("UPH" in f_code or "AVERAGE" in f_code):
+                f_grados = f_elem
+                break
 
-                    # Lógica de Grados (Sin cambios)
-                    if "GRD" in opt_code:
-                        num_str = "".join(filter(str.isdigit, opt_code))
-                        num_int = int(num_str) if num_str else 0
-                        if 1 <= num_int <= 10:
-                            label = f"Price Grade {num_str.zfill(2) if num_int < 10 else num_int}"
-                            grados_info[label] = {"xml_upcharge": int(upcharge), "xml_total_calculado": int(base_price + upcharge)}
+        grados_info = {}
+        if f_grados is not None:
+            for opt in f_grados.findall("Option"):
+                opt_code = opt.findtext("Code", "")
+                if "GRD" in opt_code.upper():
+                    num_str = "".join(filter(str.isdigit, opt_code))
+                    num_int = int(num_str) if num_str else 0
                     
-                    # Lógica de Opcionales (Nueva)
-                    # Mapeamos el código del XML con el encabezado aproximado
-                    opcionales_info[opt_code] = {"xml_upcharge": int(upcharge)}
+                    if 1 <= num_int <= 10:
+                        label = f"Price Grade {num_str.zfill(2) if num_int < 10 else num_int}"
+                        val_node = opt.find(".//OptionPrice/Value")
+                        upcharge = float(val_node.text) if val_node is not None else 0.0
+                        grados_info[label] = {"xml_upcharge": int(upcharge), "xml_total_calculado": int(base_price + upcharge)}
 
-        results.append({"sku": sku, "base_price": int(base_price), "grados": grados_info, "opcionales": opcionales_info})
+        results.append({"sku": sku, "base_price": int(base_price), "grados": grados_info})
     return results
 
 # ======================================================
@@ -156,59 +149,58 @@ def generar_xml_editado(xml_original: str, reporte_detallado: List[Dict]) -> str
     root = ET.fromstring(xml_original)
     cambios_realizados = 0
 
+    print("\n🔍 PROCESANDO EDICIÓN XML PARA ALMACENAMIENTO...")
+    
     for item in reporte_detallado:
         sku = item["sku"]
 
-        # 1. Update Base Price
         if item.get("nuevo_base_csv") is not None:
             prod = root.find(f".//Product[Code='{sku}']")
             if prod is not None:
                 price_node = prod.find(".//Price/Value")
                 if price_node is not None:
-                    price_node.text = str(float(item["nuevo_base_csv"]))
-                    cambios_realizados += 1
+                    if price_node.text != str(item["nuevo_base_csv"]):
+                        price_node.text = str(item["nuevo_base_csv"])
+                        cambios_realizados += 1
 
-        # 2. Update Grados
         for g in item.get("comparativa_grados_xml", []):
             if g["result"] == "MISMATCH":
-
-                # 🔧 FIX
                 num_str = "".join(filter(str.isdigit, g["grado"]))
+                num_int = int(num_str) if num_str else 0
 
+                if num_int == 2 or num_int > 10:
+                    continue
+
+                encontrado = False
                 for feature in root.findall(".//Feature"):
-                    if sku in feature.findtext("Code", ""):
-                        for opt in feature.findall("Option"):
-                            opt_code = opt.findtext("Code", "").upper()
-
-                            if "GRD" in opt_code and num_str in opt_code:
-                                val_node = opt.find(".//OptionPrice/Value")
+                    f_code = feature.findtext("Code", "")
+                    if sku in f_code:
+                        for option in feature.findall("Option"):
+                            o_code = option.findtext("Code", "")
+                            if "GRD" in o_code.upper() and (num_str in o_code or str(num_int) in o_code):
+                                val_node = option.find(".//OptionPrice/Value")
                                 if val_node is not None:
-                                    val_node.text = str(float(g["xml_upcharge_sugerido"]))
-                                    cambios_realizados += 1
+                                    nuevo_val = str(float(g["xml_upcharge_sugerido"]))
+                                    if val_node.text != nuevo_val:
+                                        val_node.text = nuevo_val
+                                        cambios_realizados += 1
+                                    encontrado = True
+                                    break
+                        if encontrado: break
 
-        # 3. Update Opcionales
-        for opt_diff in item.get("comparativa_opcionales_xml", []):
-            if opt_diff["result"] == "MISMATCH":
-                for feature in root.findall(".//Feature"):
-                    if sku in feature.findtext("Code", ""):
-                        for opt in feature.findall("Option"):
-                            opt_code = opt.findtext("Code", "").upper()
-
-                            if opt_code in opt_diff["grado"].upper():
-                                val_node = opt.find(".//OptionPrice/Value")
-                                if val_node is not None:
-                                    val_node.text = str(float(opt_diff["xml_upcharge_sugerido"]))
-                                    cambios_realizados += 1
-
+    print(f"✅ CAMBIOS TOTALES PREPARADOS: {cambios_realizados}")
     return ET.tostring(root, encoding='unicode', method='xml')
+
 # ======================================================
-# 6. ORQUESTADOR PRINCIPAL
+# 6. ORQUESTADOR PRINCIPAL (ACTUALIZADO PARA SUPABASE)
 # ======================================================
 def recalcular_upcharge_dinamico(csv_total: int, base_referencia: int) -> int:
-    return max(0, csv_total - base_referencia) if base_referencia > 0 else csv_total
+    return max(0, csv_total - base_referencia) if base_referencia > 0 else 0
 
 def run_software_audit(archivo_csv_local: str):
-    if not os.path.exists(archivo_csv_local): return
+    if not os.path.exists(archivo_csv_local): 
+        print(f"Archivo {archivo_csv_local} no encontrado.")
+        return
         
     with open(archivo_csv_local, "r", encoding="utf-8-sig") as f:
         csv_usuario = f.read()
@@ -216,7 +208,9 @@ def run_software_audit(archivo_csv_local: str):
     maestro = obtener_datos_maestros()
     discrepancias = auditar_csv_logic(csv_usuario, maestro["csv_raw"])
     
-    if not discrepancias: return
+    if not discrepancias:
+        print("\n✅ ÉXITO: El archivo coincide con el maestro. No hay cambios que reportar.")
+        return
 
     skus_err = list({d["sku"] for d in discrepancias})
     pim_data = {p["sku"]: p for p in extraer_pim_xml(maestro["xml_raw"], skus_err)}
@@ -225,83 +219,78 @@ def run_software_audit(archivo_csv_local: str):
     for d in discrepancias:
         sku = d["sku"]
         pim = pim_data.get(sku, {})
-        base_ref = pim.get("base_price", 0)
+        base_referencia = pim.get("base_price", 0)
         
         grados_disc = []
-        opcionales_disc = []
         nuevo_base_csv = None
 
-        # Detectar Cambio en Grado 02 (Precio Base)
         for i, h in enumerate(d["headers"]):
-            if "PRICE GRADE 02" in h.upper():
-                val_csv_g2 = limpiar_monto(d["row_user"][i])
-                if val_csv_g2 != base_ref and val_csv_g2 > 0:
-                    nuevo_base_csv = val_csv_g2
-                    base_ref = val_csv_g2
+            if "PRICE GRADE 02" in h.strip().upper():
+                val_csv_grade2 = limpiar_monto(d["row_user"][i])
+                if val_csv_grade2 != base_referencia:
+                    nuevo_base_csv = val_csv_grade2
+                    base_referencia = val_csv_grade2 
                 break
 
-        # Procesar Columnas
         for i, h in enumerate(d["headers"]):
-            h_up = h.strip().upper()
-            val_csv = limpiar_monto(d["row_user"][i])
-            if val_csv == 0: continue
-
-            # RAMA A: GRADOS (Mantenida intacta)
-            if h_up.startswith("PRICE GRADE"):
-                num_str = "".join(filter(str.isdigit, h_up))
+            h_clean = h.strip()
+            if h_clean.upper().startswith("PRICE GRADE"):
+                num_str = "".join(filter(str.isdigit, h_clean))
                 num_int = int(num_str) if num_str else 0
+                
                 if num_int == 2 or num_int > 10: continue
-                
+
+                val_csv = limpiar_monto(d["row_user"][i])
                 lbl = f"Price Grade {num_str.zfill(2) if num_int < 10 else num_int}"
-                info_xml = pim.get("grados", {}).get(lbl)
+                info_xml = pim.get("grados", {}).get(lbl, {"xml_upcharge": "NOT_FOUND", "xml_total_calculado": "NOT_FOUND"})
                 
-                if info_xml and val_csv != info_xml["xml_total_calculado"]:
+                status = "OK"
+                if info_xml["xml_total_calculado"] != "NOT_FOUND":
+                    status = "OK" if val_csv == info_xml["xml_total_calculado"] else "MISMATCH"
+                else: 
+                    status = "NOT_IN_PIM"
+
+                if status != "OK":
                     grados_disc.append({
-                        "grado": h, "csv_user_total": val_csv,
-                        "xml_upcharge_sugerido": recalcular_upcharge_dinamico(val_csv, base_ref),
-                        "result": "MISMATCH"
+                        "grado": h_clean, 
+                        "csv_user_total": val_csv,
+                        "xml_upcharge_sugerido": recalcular_upcharge_dinamico(val_csv, base_referencia),
+                        "xml_expected_total": info_xml["xml_total_calculado"], 
+                        "result": status
                     })
 
-            # RAMA B: OPCIONALES (Nueva Funcionalidad)
-            elif h_up.startswith("PRICE OPTIONAL"):
-                # Buscamos si el opcional existe en el PIM del SKU
-                encontrado = False
-                for opt_code, opt_data in pim.get("opcionales", {}).items():
-                    # Si el código del XML está en el encabezado (ej: 'CAS' en 'Price Optional Casters')
-                    if opt_code in h_up or h_up.replace("PRICE OPTIONAL ", "") in opt_code:
-                        if val_csv != opt_data["xml_upcharge"]:
-                            opcionales_disc.append({
-                                "grado": h, # Usamos 'grado' como llave genérica para reusar lógica
-                                "csv_user_total": val_csv,
-                                "xml_upcharge_sugerido": val_csv, # En opcionales el CSV suele ser el upcharge directo
-                                "result": "MISMATCH"
-                            })
-                        encontrado = True
-                        break
-                if not encontrado and val_csv > 0:
-                    opcionales_disc.append({"grado": h, "csv_user_total": val_csv, "result": "NOT_IN_PIM"})
-
-        if grados_disc or opcionales_disc or nuevo_base_csv:
+        if grados_disc or nuevo_base_csv is not None:
             reporte_final.append({
                 "sku": sku, 
                 "nuevo_base_csv": nuevo_base_csv,
-                "comparativa_grados_xml": grados_disc,
-                "comparativa_opcionales_xml": opcionales_disc
+                "comparativa_grados_xml": grados_disc
             })
 
-    # Finalización y Subida
+    # Generamos el contenido del XML actualizado
     xml_final_content = generar_xml_editado(maestro["xml_raw"], reporte_final)
+    
+    # Generamos el Micro-Reporte Resumen
     resumen_ejecutivo = generar_resumen_ejecutivo(reporte_final)
 
+    # ACTUALIZACIÓN EN BASE DE DATOS (EN VEZ DE DESCARGA)
+    print("\n🚀 SINCRONIZANDO RESULTADOS CON SUPABASE...")
     try:
-        supabase.from_('ClientsSERVEX').update({
-            "audit_report_json": reporte_final,
-            "audit_summary_json": resumen_ejecutivo,
-            "xml_actualizer_raw": xml_final_content
-        }).eq('company_name', 'LESRO').execute()
-        print(f"✅ SINCRONIZACIÓN COMPLETA: {resumen_ejecutivo['mensaje_resumen']}")
+        update_res = supabase.from_('ClientsSERVEX') \
+            .update({
+                "audit_report_json": reporte_final,
+                "audit_summary_json": resumen_ejecutivo, # Almacenamos el resumen
+                "xml_actualizer_raw": xml_final_content
+            }) \
+            .eq('company_name', 'LESRO') \
+            .execute()
+        
+        print(f"✅ PROCESO COMPLETADO EXITOSAMENTE.")
+        print(f"📊 Reporte Detallado: {len(reporte_final)} SKUs.")
+        print(f"📝 Resumen: {resumen_ejecutivo['mensaje_resumen']}")
+        
     except Exception as e:
-        print(f"❌ ERROR: {e}")
+        print(f"❌ ERROR AL ACTUALIZAR LA BASE DE DATOS: {e}")
 
 if __name__ == "__main__":
-    run_software_audit("LESRO_PRICING_MASTER_for_01_01_26(2026_Pricing_File_RWS)-29.csv")
+    TARGET = "LESRO_PRICING_MASTER_for_01_01_26(2026_Pricing_File_RWS)-29.csv"
+    run_software_audit(TARGET)
