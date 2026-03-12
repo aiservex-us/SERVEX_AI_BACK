@@ -4,6 +4,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client
 from dotenv import load_dotenv
+from pydantic import BaseModel # Importado para el esquema del chat
 
 from Reestructure_xml import (
     obtener_datos_maestros,
@@ -15,6 +16,7 @@ from Reestructure_xml import (
 )
 
 from Reestructure_model import app as agent_workflow
+from langchain_groq import ChatGroq # Importado para el endpoint de chat
 
 load_dotenv()
 
@@ -32,24 +34,73 @@ app.add_middleware(
 )
 
 # ================================
-# Supabase
+# Supabase & Chat Setup
 # ================================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("❌ Supabase environment variables missing")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+llm_chat = ChatGroq(model="Llama-3.1-8B-Instant", api_key=GROQ_API_KEY, temperature=0.1)
 
+# Esquema para el request del chat
+class ChatRequest(BaseModel):
+    message: str
 
 @app.get("/")
 def root():
     return {"status": "online", "service": "SERVEX_AI Engine"}
 
+# ==========================================================
+# NEW: CHAT ENDPOINT (SVX COPILOT INTERACTIVE)
+# ==========================================================
+
+@app.post("/chat")
+async def chat_with_agent(request: ChatRequest):
+    """
+    Endpoint para que el front interactúe con los datos de la última auditoría.
+    """
+    try:
+        # 1. Obtener los últimos datos de auditoría de Supabase
+        response = supabase.table('ClientsSERVEX').select("audit_report_json").eq('company_name', 'LESRO').execute()
+        
+        if not response.data:
+            return {"response": "No hay datos de auditoría disponibles para analizar."}
+        
+        audit_data = response.data[0].get("audit_report_json", [])
+
+        # 2. Configurar el prompt con el contexto de SERVEX_AI
+        prompt = f"""Eres SVX Copilot, el asistente senior de ingeniería de SERVEX_AI. 
+        Tu misión es responder dudas sobre la última auditoría de precios de LESRO.
+        
+        CONTEXTO DE AUDITORÍA (JSON):
+        {json.dumps(audit_data)}
+        
+        INSTRUCCIONES:
+        - Si el usuario pregunta por un SKU específico, busca en el JSON.
+        - Si no encuentras el SKU, indica que ese producto no presentó discrepancias.
+        - Mantén el tono sofisticado, proactivo y técnico que define a SERVEX_AI.
+        
+        PREGUNTA DEL USUARIO: {request.message}
+        """
+
+        # 3. Generar respuesta
+        ai_response = llm_chat.invoke(prompt).content
+        
+        return {
+            "status": "success",
+            "response": ai_response
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error en el chat: {str(e)}")
+
 
 # ==========================================================
-# MAIN PIPELINE
+# MAIN PIPELINE (UNTOUCHED)
 # ==========================================================
 
 @app.post("/audit-process")
